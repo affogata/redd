@@ -69,6 +69,10 @@ module Redd
       #     visible in messages)
       property :title, :nil
 
+      # @!attribute [r] permalink
+      #   @return [String] the permalink to a comment
+      property :permalink
+
       # @!attribute [r] banned_at
       #   @return [Time, nil] the time when the comment was banned
       property :banned_at, from: :banned_at_utc, with: ->(t) { Time.at(t) if t }
