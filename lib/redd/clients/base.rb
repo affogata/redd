@@ -66,6 +66,7 @@ module Redd
         @rate_limit = options[:rate_limit] || RateLimit.new(1)
         @auth_endpoint = options[:auth_endpoint] || "https://www.reddit.com/"
         @api_endpoint = options[:api_endpoint] || "https://oauth.reddit.com/"
+        @proxy_options = options[:proxy]
         @access = Access.new(expires_at: Time.at(0))
       end
 
@@ -155,6 +156,7 @@ module Redd
 
       def reset_connection!
         @connection = nil
+        @auth_connection = nil
         @access
       end
 
@@ -163,7 +165,8 @@ module Redd
         @connection ||= Faraday.new(
           @api_endpoint,
           headers: default_headers,
-          builder: middleware
+          builder: middleware,
+          proxy: proxy_options
         )
       end
 
@@ -180,8 +183,15 @@ module Redd
         @auth_connection ||= Faraday.new(
           @auth_endpoint,
           headers: auth_headers,
-          builder: middleware
+          builder: middleware,
+          proxy: proxy_options
         )
+      end
+
+      def proxy_options
+        return nil if @proxy_options.nil?
+
+        @proxy_options
       end
     end
   end
