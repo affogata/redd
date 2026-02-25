@@ -67,19 +67,26 @@ module Redd
         self[:stickied] = false
       end
 
+      # @param params [Hash] Optional params forwarded to the API.
+      # @option params [1..500] :limit Maximum number of top-level comments to
+      #   return (Reddit caps this at 500).
+      # @option params [Integer] :depth Maximum depth of subtrees in the
+      #   thread.
+      # @option params [:confidence, :top, :new, :controversial, :old,
+      #   :random, :qa] :sort Comment sort order.
       # @return [Listing] The submission's comments.
-      # @todo Allow for various depths and contexts and what not. Maybe a
-      #   get_comment method?
-      def comments
-        refresh! unless @comments
+      def comments(**params)
+        refresh!(**params) if !@comments || !params.empty?
         @comments
       end
       alias_method :replies, :comments
 
       # Refresh the submission AND its comments.
+      # @param params [Hash] Optional params forwarded to the API (see
+      #   {#comments} for supported options).
       # @return [Submission] The updated submission.
-      def refresh!
-        body = get("/comments/#{id}.json").body
+      def refresh!(**params)
+        body = get("/comments/#{id}.json", params).body
         @comments = client.object_from_body(body[1])
         deep_merge!(body[0])
       end
@@ -87,19 +94,23 @@ module Redd
       # Take a MoreComments and return a listing of comments.
       # @param [MoreComments] more The object to expand.
       # @return [Listing] A listing of the expanded comments.
+      # @note Reddit's /api/morechildren silently truncates large requests, so
+      #   children are fetched in batches of {MORECHILDREN_BATCH_SIZE}.
+      MORECHILDREN_BATCH_SIZE = 20
+
       def expand_more(more)
-        response = client.get(
-          "/api/morechildren",
-          children: more.join(","),
-          link_id: fullname
-        )
+        things = more.each_slice(MORECHILDREN_BATCH_SIZE).flat_map do |batch|
+          response = client.get(
+            "/api/morechildren",
+            children: batch.join(","),
+            link_id: fullname
+          )
+          response.body[:json][:data][:things]
+        end
 
         client.object_from_body(
           kind: "Listing",
-          data: {
-            before: "", after: "",
-            children: response.body[:json][:data][:things]
-          }
+          data: {before: "", after: "", children: things}
         )
       end
 

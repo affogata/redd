@@ -58,19 +58,62 @@ module Redd
         #   array of the submission's comments or the comments' replies.
         def flat_comments(base)
           meth = (base.is_a?(Objects::Submission) ? :comments : :replies)
-          stack = base.send(meth).dup
-          flattened = []
+          flatten_listing(base.send(meth))
+        end
 
-          until stack.empty?
-            comment = stack.shift
-            if comment.is_a?(Objects::Comment)
-              replies = comment.replies
-              stack = replies + stack if replies
+        # Fetches all accessible comments for a submission. Does an initial
+        # fetch with +limit: 500+ (Reddit's max) then expands any remaining
+        # {Objects::MoreComments} stubs. Accepts the same params as
+        # {Objects::Submission#refresh!} (+:limit+, +:depth+, +:sort+).
+        # @note Stub expansion requires an authenticated client — with
+        #   {Clients::Userless}, prefer +submission.refresh!(limit: 500)+
+        #   followed by {#flat_comments} to avoid a wasted API call.
+        # @return [Array<Objects::Comment>]
+        def fetch_all_comments(submission, **params)
+          submission.refresh!(**{limit: 500}.merge(params))
+          result = flat_comments(submission)
+
+          skipped_count = 0
+
+          loop do
+            more_idx = result.index { |c| c.is_a?(Objects::MoreComments) }
+            break unless more_idx
+
+            more = result.delete_at(more_idx)
+            next if more.empty? || more.id == "_"
+
+            retries_left = 2
+            begin
+              expanded = submission.expand_more(more)
+              result.insert(more_idx, *flatten_listing(expanded))
+            rescue Redd::Error::RateLimited => e
+              sleep(e.time)
+              retry
+            rescue Redd::Error::BadGateway,
+                   Redd::Error::ServiceUnavailable,
+                   Redd::Error::TimedOut
+              retries_left -= 1
+              if retries_left >= 0
+                sleep(2)
+                retry
+              else
+                skipped_count += more.count
+              end
+            rescue Redd::Error::PermissionDenied
+              # 403 is auth-level — all remaining stubs will fail too, no point retrying.
+              remaining_stubs = result.select { |c| c.is_a?(Objects::MoreComments) }
+              skipped_count += more.count + remaining_stubs.sum(&:count)
+              result.reject! { |c| c.is_a?(Objects::MoreComments) }
+              break
             end
-            flattened << comment
           end
 
-          flattened
+          if skipped_count > 0
+            warn "[redd] fetch_all_comments: #{skipped_count} comments unreachable " \
+                 "(MoreComments expansion failed — 403 or transient errors after retries)"
+          end
+
+          result
         end
 
         # Get a given property of a given object.
@@ -81,6 +124,26 @@ module Redd
         end
 
         private
+
+        # Depth-first traversal of a listing (or any Array) of comments,
+        # inlining each comment's replies in order.
+        # @param [Array] listing The top-level items to traverse.
+        # @return [Array<Objects::Comment, Objects::MoreComments>]
+        def flatten_listing(listing)
+          stack = listing.dup
+          flattened = []
+
+          until stack.empty?
+            item = stack.shift
+            if item.is_a?(Objects::Comment)
+              replies = item.replies
+              stack = replies + stack if replies
+            end
+            flattened << item
+          end
+
+          flattened
+        end
 
         # Take a multilevel body ({kind: "tx", data: {...}}) and flatten it
         # into something like {kind: "tx", ...}
